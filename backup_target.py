@@ -1,0 +1,97 @@
+import argparse
+import hashlib
+import json
+import os
+from datetime import datetime,timezone
+
+import boto3
+from botocore.exceptions import ClientError
+
+BUCKET_NAME = "trilio-backups"
+MINIO_ENDPOINT = "http://localhost:9000"
+MINIO_ACCESS_KEY = "minioadmin"
+MINIO_SECRET_KEY = "minioadmin"
+
+def get_client():
+  return boto3.client(
+    "s3",
+    endpoint_url = MINIO_ENDPOINT,
+    aws_access_key_id= MINIO_ACCESS_KEY,
+    aws_secret_access_key=MINIO_SECRET_KEY,
+  )
+
+def ensure_bucket(client):
+  try:
+    client.head_bucket(Bucket=BUCKET_NAME)
+    print(f"Bucket '{BUCKET_NAME}' already exists.")
+  except ClientError:
+    client.create_bucket(Bucket=BUCKET_NAME)
+    print(f"Bucket '{BUCKET_NAME}' created.")
+
+def compute_md5(file_path):
+  hash_md5 = hashlib.md5()
+  with open(file_path, "rb") as f:
+    for chunk in iter(lambda:f.read(8192), b""):
+      hash_md5.update(chunk)
+  return hash_md5.hexdigest()
+
+def upload_action(client,path):
+  if not os.path.exists(path):
+      print(f"Error: path '{path}' does not exist.")
+      return
+
+  timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+  prefix = f"backups/{timestamp}/"
+  manifest = {"prefix": prefix, "files":[]}
+
+  if os.path.isfile(path):
+      files_to_upload = [path]
+      base_dir = os.path.dirname(path) or "."
+  else:
+      files_to_upload = []
+      for root, _,files in os.walk(path):
+        for name in files:
+          files_to_upload.append(os.path.join(root,name))
+      base_dir = path
+
+  for file_path in files_to_upload:
+    md5sum = compute_md5(file_path)
+    rel_path = os.path.relpath(file_path,base_dir)
+    key = f"{prefix}{rel_path}"
+
+
+    client.upload_file(
+      file_path,
+ BUCKET_NAME,
+ key,
+ ExtraArgs={"Metadata":{"md5":md5sum}},
+    )
+    print(f"Uploaded {file_path} -> {key} (md5={md5sum})")
+    manifest["files"].append({"key":key,"md5":md5sum})
+
+  manifest_key = f"{prefix}manifest.json"
+  manifest_bytes = json.dumps(manifest,indent=2).encode("utf-8")
+  client.put_object( Bucket=BUCKET_NAME,Key=manifest_key,Body=manifest_bytes)
+  print(f"Manifest written to {manifest_key}")
+
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Backup Target Simulator")
+    parser.add_argument("--action", required=True, choices=["upload", "verify", "list", "delete"])
+    parser.add_argument("--path", help="File or directory to upload")
+    parser.add_argument("--prefix", help="Prefix for verify/list/delete")
+    args = parser.parse_args()
+
+    client = get_client()
+    ensure_bucket(client)
+
+    if args.action == "upload":
+        if not args.path:
+            print("Error: --path is required for upload action.")
+            return
+        upload_action(client, args.path)
+
+if __name__ == "__main__":
+    main()
+
