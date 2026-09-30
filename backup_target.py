@@ -135,6 +135,22 @@ def list_action(client):
         print(f"{prefix} - {stats['count']} object(s), {stats['size']} bytes total")
 
 
+def delete_action(client, prefix):
+    paginator = client.get_paginator("list_objects_v2")
+    keys_to_delete = []
+
+    for page in paginator.paginate(Bucket=BUCKET_NAME, Prefix=prefix):
+        for obj in page.get("Contents", []):
+            keys_to_delete.append({"Key": obj["Key"]})
+
+    if not keys_to_delete:
+        print(f"No objects found under prefix '{prefix}'.")
+        return
+
+    client.delete_objects(Bucket=BUCKET_NAME, Delete={"Objects": keys_to_delete})
+    print(f"Deleted {len(keys_to_delete)} object(s) under prefix '{prefix}'.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Backup Target Simulator")
     parser.add_argument("--action", required=True, choices=["upload", "verify", "list", "delete"])
@@ -157,6 +173,11 @@ def main():
         verify_action(client, args.prefix)
     elif args.action == "list":
         list_action(client)
+    elif args.action == "delete":
+        if not args.prefix:
+            print("Error: --prefix is required for delete action.")
+            return
+        delete_action(client, args.prefix)
 
 
 if __name__ == "__main__":
